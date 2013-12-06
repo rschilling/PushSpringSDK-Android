@@ -2,9 +2,11 @@ package com.pushspring.sdk;
 
 import java.io.File;
 import java.text.DecimalFormat;
+import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.HashMap;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.Locale;
 import java.util.TimeZone;
 import java.util.Timer;
@@ -12,9 +14,19 @@ import java.util.TimerTask;
 
 import android.accounts.Account;
 import android.accounts.AccountManager;
+import android.app.Activity;
+import android.app.ActivityManager;
+import android.app.ActivityManager.RecentTaskInfo;
 import android.app.Application;
+import android.app.Notification;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
+import android.content.res.Resources;
 import android.location.Criteria;
 import android.location.Location;
 import android.location.LocationManager;
@@ -22,6 +34,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.StatFs;
 import android.provider.Settings.Secure;
+import android.support.v4.app.NotificationCompat;
 import android.util.Log;
 
 import com.google.gson.Gson;
@@ -37,8 +50,10 @@ public class PushSpring {
 	public static final String PS_DEVICE_INFO = "PS_DEVICE_INFO";
 	public static final String PS_DEVICE_TOKEN = "PS_DEVICE_TOKEN";
 	public static final String PS_LOCATION = "PS_LOCATION";
+	public static final String PS_RECENTAPP_INFO = "PS_RECENTAPP_INFO";
 	public static final String PS_SESSION_START = "PS_SESSION_START";
 	public static final String PS_SESSION_END = "PS_SESSION_END";
+	public static final String PS_XAVM_INFO = "PS_XAVM_INFO";
 
 	// Standard event attributes
 	public static final String PS_ATTR_APIKEY = "PS_APIKEY";
@@ -62,10 +77,12 @@ public class PushSpring {
 	public static final String PS_ATTR_LANGUAGE = "PS_LANGUAGE";
 	public static final String PS_ATTR_LATITUDE = "PS_LATITUDE";
 	public static final String PS_ATTR_LONGITUDE = "PS_LONGITUDE";
+	public static final String PS_ATTR_RECENTAPPS = "PS_RECENTAPPS";
 	public static final String PS_ATTR_SYSTEMVER = "PS_SYSTEMVER";
 	public static final String PS_ATTR_TIMESTAMP = "PS_TIMESTAMP";
 	public static final String PS_ATTR_TIMEZONEOFFSET = "PS_TIMEZONEOFFSET";
 	public static final String PS_ATTR_USER_OPT_OUT = "PS_USER_OPT_OUT";
+	public static final String PS_ATTR_XAVM = "PS_XAVM";
 
 	// Keys on inbound notifications
 	public static final String PS_CAMPAIGN_ID = "PS_CAMPAIGN_ID";
@@ -77,6 +94,7 @@ public class PushSpring {
 	private Context _context;
 	private String _apiKey = null;
 	private LinkedList<Context> _sessions;
+	private Intent _pushIntent = null;
 
 	private PushSpring() {
 		_sessions = new LinkedList<Context>();
@@ -90,21 +108,27 @@ public class PushSpring {
 		return _instance;
 	}
 
-	public void onCreate(Context context, final String apiKey)
+	public void onCreate(Activity mainActivity, final String apiKey)
 	{
-		// TODO: Need to figure out how to handle app launch from notification
 		this._apiKey = apiKey;
-		this._context = context;
+		this._context = mainActivity.getApplicationContext();
 
-		PSNetworkEngine.sharedNetworkEngine().setContext(context);
+		PSNetworkEngine.sharedNetworkEngine().setContext(this._context);
 
 		int currentapiVersion = android.os.Build.VERSION.SDK_INT;
 		if (currentapiVersion >= android.os.Build.VERSION_CODES.ICE_CREAM_SANDWICH){
-			PSActivityLifecycleCallbacks callbacks = new PSActivityLifecycleCallbacks();
-			((Application)(context.getApplicationContext())).registerActivityLifecycleCallbacks(callbacks);
+			((Application)this._context).registerActivityLifecycleCallbacks(new PSActivityLifecycleCallbacks());
 		}
 
 		recordEvent(PS_DEVICE_INFO, getDeviceInfo());
+		recordEvent(PS_RECENTAPP_INFO, getRecentTasks());
+		recordEvent(PS_XAVM_INFO, getPackages());
+
+        if ((mainActivity.getIntent().getStringExtra(PushSpring.PS_ATTR_CAMPAIGNID) != null) &&
+            (mainActivity.getIntent().getStringExtra(PushSpring.PS_ATTR_CAMPAIGNURL) != null))
+        {
+        	showLandingPage(mainActivity);
+        }
 	}
 
 	public void onSessionStart(Context context) {
@@ -133,14 +157,12 @@ public class PushSpring {
 
 	public void onRegistered(final String registrationId)
 	{
-		Log.d(TAG, registrationId);
 		recordEvent(PS_DEVICE_TOKEN, new HashMap<String,Object>() {{
 			put(PS_ATTR_DEVICETOKEN, registrationId);
 		}});
 	}
 
 	public void onUnregistered() {
-		Log.d(TAG, "Unregister");
 		recordEvent(PS_DEVICE_TOKEN, new HashMap<String,Object>() {{
 			put(PS_ATTR_DEVICETOKEN, "");
 		}});
@@ -148,13 +170,18 @@ public class PushSpring {
 
 	public boolean onMessage(Context context, Intent message)
 	{
-		HashMap<String,Object> notification = new HashMap<String,Object>();
 		Bundle extras=message.getExtras();
-		 for (String key : extras.keySet()) {
-			 notification.put(key, extras.getString(key));
-		 }
+		return PushSpring.paintNotificationToTray(context,message);
+	}
 
-		 return processInboundNotification(notification);
+	public void setPushIntent(Intent pushIntent)
+	{
+		this._pushIntent = pushIntent;
+	}
+
+	public Intent getPushIntent()
+	{
+		return this._pushIntent;
 	}
 
 	public void setCustomerId(final String customerId)
@@ -244,11 +271,9 @@ public class PushSpring {
 			LocationManager locationManager = (LocationManager) _context.getSystemService(Context.LOCATION_SERVICE);
 			boolean enabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
 
-			// Check if enabled and if not send user to the GSP settings
+			// Check if enabled and if not send user to the GPS settings
 			// Better solution would be to display a dialog and suggesting to
 			// go to the settings
-
-			// TODO: Should show AlarmDialog and ask if the user wants to turn on GPS if off
 
 			if (enabled) {
 			    Criteria criteria = new Criteria();
@@ -257,14 +282,13 @@ public class PushSpring {
 
 			    // Initialize the location fields
 			    if (location != null) {
-			      Log.d(TAG, "Location provider selected: " + provider);
 			      setLocation(location.getLatitude(),location.getLongitude());
 			    }
 			}
 		}
 		catch(Exception e)
 		{
-			Log.d(TAG, e.getMessage());
+//			Log.d(TAG, e.getMessage());
 		}
 	}
 
@@ -289,29 +313,73 @@ public class PushSpring {
 	}
 
 
+    public static boolean paintNotificationToTray(Context context, Intent intent)
+    {
+        Bundle extras=intent.getExtras();
+
+        String campaignId = (String)extras.get(PushSpring.PS_ATTR_CAMPAIGNID);
+        String campaignUrl = (String)extras.get(PushSpring.PS_ATTR_CAMPAIGNURL);
+        String message = (String)extras.get("message");
+
+        if (campaignId == null)
+        {
+        	return false;
+        }
+
+        ApplicationInfo ai = context.getApplicationInfo();
+
+        NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        Resources res = context.getResources();
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(context);
+
+        String packageName = context.getPackageName();
+        Intent launchIntent = PushSpring.sharedPushSpring().getPushIntent();
+
+        // default to the app's launch intent if none is set
+        if (launchIntent == null)
+        {
+       		launchIntent = context.getPackageManager().getLaunchIntentForPackage(packageName);
+       	}
+
+        // add the PushSpring campaignId and campaignUrl as extras
+        launchIntent.putExtra(PushSpring.PS_ATTR_CAMPAIGNID, campaignId);
+        launchIntent.putExtra(PushSpring.PS_ATTR_CAMPAIGNURL, campaignUrl);
+
+        PendingIntent contentIntent = PendingIntent.getActivity(context, 0, launchIntent, PendingIntent.FLAG_CANCEL_CURRENT);
+
+        try {
+	        Resources appResources = context.getPackageManager().getResourcesForApplication(ai.packageName);
+	        String appLabel = appResources.getString(ai.labelRes);
+
+	        builder.setContentIntent(contentIntent)
+	               .setTicker(message)
+	               .setWhen(System.currentTimeMillis())
+	               .setAutoCancel(true)
+	               .setSmallIcon(ai.icon)
+	               .setContentTitle(appLabel)
+	               .setContentText(message);
+	        Notification n = builder.build();
+	        nm.notify(campaignId, 0, n);
+	    } catch(android.content.pm.PackageManager.NameNotFoundException e) {
+	    	; // this really can't happen as our package is obviously installed and running :)
+	    }
+        return true;
+    }
+
+
 	protected void recordEvent(String eventName, HashMap<String,Object> attributes)
 	{
 		formatAndTransmitEvent(eventName, attributes);
 	}
 
-	protected boolean processInboundNotification(HashMap<String,Object> notification)
+	protected void showLandingPage(Activity mainActivity)
 	{
-		// Attempt to get the campaign info
-		String campaignId = (String)notification.get(PS_ATTR_CAMPAIGNID);
-		String campaignUrl = (String)notification.get(PS_ATTR_CAMPAIGNURL);
-
-		// If we didn't get any campaign info get out
-		if(campaignId==null || campaignUrl == null)
-		{
-			return false;
-		}
-
-		showWebAlert(_context, campaignUrl, campaignId);
-
-		return true;
+		String campaignId = mainActivity.getIntent().getStringExtra(PushSpring.PS_ATTR_CAMPAIGNID);
+		String campaignUrl = mainActivity.getIntent().getStringExtra(PushSpring.PS_ATTR_CAMPAIGNURL);
+		showLandingPage(mainActivity, campaignUrl, campaignId);
 	}
 
-	protected void showWebAlert(Context context, final String campaignUrl, final String campaignId)
+	protected void showLandingPage(Context context, String campaignUrl, String campaignId)
 	{
 		Intent intent = new Intent(context, PushSpringNotificationActivity.class);
 		intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -336,7 +404,7 @@ public class PushSpring {
 
 		long timeStamp = Calendar.getInstance(TimeZone.getTimeZone("UTC")).getTimeInMillis();
 		// Log the event
-		Log.d(TAG, String.format("recordEvent %s %s",eventName, json));
+		// Log.d(TAG, String.format("recordEvent %s %s",eventName, json));
 
 		// Add the core elements
 		HashMap<String, Object> dict = new HashMap<String, Object>();
@@ -417,4 +485,46 @@ public class PushSpring {
 		return deviceInfo;
 	}
 
+	protected HashMap<String,Object> getPackages()
+	{
+		HashMap<String,Object>ret = new HashMap<String, Object>();
+		PackageManager pm = _context.getPackageManager();
+		//get a list of installed apps.
+		List<ApplicationInfo> packages = pm.getInstalledApplications(PackageManager.GET_META_DATA);
+		ArrayList<String> retList = new ArrayList<String>();
+
+		for (ApplicationInfo packageInfo : packages) {
+		    if ((packageInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0)
+			{
+				retList.add("SYSTEM_"+packageInfo.packageName);
+			} else {
+				retList.add(packageInfo.packageName);
+			}
+		}
+
+		ret.put(PS_ATTR_XAVM, retList);
+		return ret;
+	}
+
+
+	protected HashMap<String,Object> getRecentTasks()
+	{
+		HashMap<String,Object>ret = new HashMap<String, Object>();
+	    ActivityManager activityManager = (ActivityManager) _context.getSystemService(_context.ACTIVITY_SERVICE);
+		PackageManager pm = _context.getPackageManager();
+    	List<RecentTaskInfo> recentTasks = activityManager.getRecentTasks(20, ActivityManager.RECENT_WITH_EXCLUDED);
+    	ArrayList<String> retList = new ArrayList<String>();
+
+    	for (RecentTaskInfo recentTaskInfo : recentTasks) {
+    		ComponentName cn = recentTaskInfo.baseIntent.resolveActivity(pm);
+    		if (cn == null)
+    		{
+    			continue;
+    		}
+
+    		retList.add(cn.getPackageName());
+    	}
+    	ret.put(PS_ATTR_RECENTAPPS, retList);
+    	return ret;
+	}
 }

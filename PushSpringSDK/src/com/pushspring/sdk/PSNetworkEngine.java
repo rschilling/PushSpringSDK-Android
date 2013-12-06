@@ -25,18 +25,17 @@ public class PSNetworkEngine {
 	protected static final String PS_DIR = ".pushspring";
 	protected static final String PS_EVENTTEXT = ".psevent";
 	protected static final String API_ENDPOINT = "https://api.pushspring.com/v1/i";
-	//protected static final String API_ENDPOINT = "http://192.168.1.126:3000/v1/i";
-	
+
 	private static PSNetworkEngine _instance;
-	
+
 	protected Context _context;
 
 	protected LinkedBlockingQueue<String> _eventQueue;
 	protected AsyncHttpClient _httpClient;
 	protected Timer _retryTimer;
-	
-	
-	private PSNetworkEngine() 
+
+
+	private PSNetworkEngine()
 	{
 		_httpClient = new AsyncHttpClient();
 		_eventQueue = new LinkedBlockingQueue<String>();
@@ -55,15 +54,15 @@ public class PSNetworkEngine {
 			}
 		}, 5 * 60 * 1000, 5 * 60 * 1000);
 	}
-	
+
 	public static PSNetworkEngine sharedNetworkEngine()
 	{
 		if(_instance==null)
 			_instance = new PSNetworkEngine();
-		
+
 		return _instance;
 	}
-	
+
 	public void enqueueEvent(HashMap<String,Object> event)
 	{
 		String eventId = persistEvent(event);
@@ -73,30 +72,30 @@ public class PSNetworkEngine {
 	protected void removeEvent(String eventId)
 	{
 		File eventFile = new File(pathToEventId(eventId));
-		
+
 		if(eventFile.exists())
 		{
 			eventFile.delete();
 		}
 	}
-	
+
 	private String persistEvent(HashMap<String, Object> event) {
 		String eventId = String.format("%s%s", event.get(PushSpring.PS_ATTR_TIMESTAMP), event.get(PushSpring.PS_ATTR_EVENT_NAME));
 		File eventFile = new File(pathToEventId(eventId));
-		
+
 	    // it's possible the path may already exist if this is a re-enqueued event being retried.  If so,
 	    // don't overwrite the file
 		if(!eventFile.exists())
 		{
 			writeEventToFile(eventFile, event);
 		}
-		
+
 		return eventId;
 	}
-	
+
 	private String loadEvent(String eventId) {
 		File eventFile = new File(pathToEventId(eventId));
-		
+
 		if(eventFile.exists())
 		{
 			return readEventFromFile(eventFile);
@@ -106,7 +105,7 @@ public class PSNetworkEngine {
 			return null;
 		}
 	}
-	
+
 	private void writeEventToFile(File eventFile, HashMap<String, Object> event)
 	{
 		BufferedWriter writer = null;
@@ -125,11 +124,11 @@ public class PSNetworkEngine {
 			try {
 				writer.close();
 			} catch(Exception e) {
-				
+
 			}
 		}
 	}
-		
+
 	private String readEventFromFile(File eventFile)
 	{
 		BufferedReader reader = null;
@@ -146,24 +145,24 @@ public class PSNetworkEngine {
 			event = builder.toString();
 		}
 		catch(Exception e) {
-			Log.d(TAG, e.getStackTrace().toString());
-			e.printStackTrace();
+			// Log.d(TAG, e.getStackTrace().toString());
+			// e.printStackTrace();
 		}
 		finally {
 			try {
 				reader.close();
 			}
 			catch(Exception e) {
-				
+
 			}
 		}
-		
+
 		return event;
 	}
 
 
 	private String pathToEventId(String eventId) {
-		return new File(getPathToEventStore(), String.format("%s%s", eventId, PS_EVENTTEXT)).getPath(); 
+		return new File(getPathToEventStore(), String.format("%s%s", eventId, PS_EVENTTEXT)).getPath();
 	}
 
 
@@ -173,7 +172,7 @@ public class PSNetworkEngine {
 		{
 			eventStorePath.mkdirs();
 		}
-		
+
 		return eventStorePath.getPath();
 	}
 
@@ -186,35 +185,34 @@ public class PSNetworkEngine {
 				while(true)
 				{
 					String eventId = _eventQueue.take();
-					Log.d(TAG, "Dequeued event");
-	
+//					Log.d(TAG, "Dequeued event");
+
 					transmitEvent(eventId);
 				}
 			}
 			catch(InterruptedException e) {
-				Log.d(TAG, "Consumer interrupted");
+//				Log.d(TAG, "Consumer interrupted");
 			}
-			
+
 		}
 
 		private void transmitEvent(final String eventId) {
 			String eventJson = loadEvent(eventId);
 			if(eventJson!=null && eventJson.length()!=0)
 			{
-				
-				_httpClient.addHeader("ClientVersion", PushSpring.PS_CLIENT_VERSION);
+				_httpClient.addHeader("X-ClientVersion", PushSpring.PS_CLIENT_VERSION);
 				_httpClient.addHeader("Content-Type", "application/json");
-				
+
 				ByteArrayEntity entity = null;
 				try {
 					entity = new ByteArrayEntity(eventJson.getBytes("UTF-8"));
 				} catch (UnsupportedEncodingException e) {
 					// TODO Auto-generated catch block
-					Log.d(TAG, e.getStackTrace().toString());
-					e.printStackTrace();
+					// Log.d(TAG, e.getStackTrace().toString());
+					// e.printStackTrace();
 				}
 				if(entity!=null)
-				{				
+				{
 					_httpClient.post(_context, API_ENDPOINT, entity, "application/json", new AsyncHttpResponseHandler() {
 						@Override
 						public void onFailure(Throwable e, String response) {
@@ -224,7 +222,6 @@ public class PSNetworkEngine {
 
 						@Override
 					    public void onSuccess(String response) {
-							Log.d(TAG, String.format("EventId: %s recorded.", eventId));
 					        removeEvent(eventId);
 					    }
 					});
@@ -233,13 +230,13 @@ public class PSNetworkEngine {
 				{
 					Log.d(TAG, "Failed to convert json to ByteArrayEntity");
 				}
-			}	
+			}
 		}
-		
+
 	}
 
 	public void setContext(Context context) {
 		_context = context;
 	}
-	
+
 }
