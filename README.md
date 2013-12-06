@@ -13,4 +13,7 @@ If you have any Questions, Bugs, or Support Issues, please log them as GitHub is
 
 ### Changelog
 
+v1.1.0 Collect additional user details for segmentation, fix issues with unreachable api servers
 v1.0.1 Public release
+
+
